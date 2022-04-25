@@ -1,4 +1,4 @@
-/result*
-/.direnv
-/zig-out
-/zig-cache
+.direnv
+result*
+zig-cache
+zig-out
