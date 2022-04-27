@@ -42,7 +42,7 @@ fn tcpConnectToAddress(address: net.Address) !net.Stream {
 
     const interval = 50 * time.ns_per_ms;
     const max_passes = happy_eyeballs_timeout / interval;
-    var passes: u8 = 0;
+    var passes: usize = 0;
     while (passes < max_passes) : (passes += 1) {
         if (std.io.is_async) {
             const loop = std.event.Loop.instance orelse return error.WouldBlock;
