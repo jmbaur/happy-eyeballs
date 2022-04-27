@@ -31,10 +31,7 @@ fn tcpConnectToHost(allocator: mem.Allocator, name: []const u8, port: u16) !net.
 }
 
 fn tcpConnectToAddress(address: net.Address) !net.Stream {
-    // TODO(jared): set sock flag back to blocking if not using evented IO mode
-    // after performing happy eyeballs check?
     const nonblock = os.SOCK.NONBLOCK;
-    // const nonblock = if (std.io.is_async) os.SOCK.NONBLOCK else 0;
     const sock_flags = os.SOCK.STREAM | nonblock |
         (if (builtin.target.os.tag == .windows) 0 else os.SOCK.CLOEXEC);
     const sockfd = try os.socket(address.any.family, sock_flags, os.IPPROTO.TCP);
@@ -59,6 +56,7 @@ fn tcpConnectToAddress(address: net.Address) !net.Stream {
                     else => return err,
                 }
             };
+            // TODO(jared): set sock flag back to blocking
         }
 
         return net.Stream{ .handle = sockfd };
