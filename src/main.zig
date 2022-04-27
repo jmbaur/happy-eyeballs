@@ -45,9 +45,13 @@ fn tcpConnectToAddress(address: net.Address) !net.Stream {
     var passes: u8 = 0;
     while (passes < max_passes) : (passes += 1) {
         if (std.io.is_async) {
-            // TODO(jared): do same error handling as blocking version
             const loop = std.event.Loop.instance orelse return error.WouldBlock;
-            try loop.connect(sockfd, &address.any, address.getOsSockLen());
+            loop.connect(sockfd, &address.any, address.getOsSockLen()) catch |err| {
+                switch (err) {
+                    error.WouldBlock, error.ConnectionPending => continue,
+                    else => return err,
+                }
+            };
         } else {
             os.connect(sockfd, &address.any, address.getOsSockLen()) catch |err| {
                 switch (err) {
@@ -55,9 +59,9 @@ fn tcpConnectToAddress(address: net.Address) !net.Stream {
                     else => return err,
                 }
             };
-            // If there is no error, return the stream with the connected fd.
-            return net.Stream{ .handle = sockfd };
         }
+
+        return net.Stream{ .handle = sockfd };
     }
 
     return HappyEyeballsError.Timeout;
