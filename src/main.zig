@@ -19,12 +19,15 @@ fn tcpConnectToHost(allocator: mem.Allocator, name: []const u8, port: u16) !net.
 
     if (list.addrs.len == 0) return error.UnknownHostName;
 
-    for (list.addrs) |addr| {
-        var stream = tcpConnectToAddress(addr) catch |err| switch (err) {
+    return tcpConnectWithHE(list.addrs);
+}
+
+fn tcpConnectWithHE(addrs: []net.Address) !net.Stream {
+    for (addrs) |addr| {
+        return tcpConnectToAddress(addr) catch |err| switch (err) {
             error.ConnectionRefused, HappyEyeballsError.Timeout => continue,
             else => return err,
         };
-        defer stream.close();
     }
 
     return std.os.ConnectError.ConnectionRefused;
@@ -65,11 +68,19 @@ fn tcpConnectToAddress(address: net.Address) !net.Stream {
     return HappyEyeballsError.Timeout;
 }
 
-pub fn main() anyerror!void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-    _ = tcpConnectToHost(alloc, "google.com", 22) catch |err| {
-        std.debug.print("{}", .{err});
-    };
+test "happy eyeballs fallback to IPv4" {
+    // TODO(jared): Setup temp server that can respond to this within the test.
+    // Currently, run `nc -l 8080` before running test.
+    const ip4 = net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, 8080);
+    // This is a documentation address (part of the 2001:DB8::/32 prefix) and
+    // is not routable over the internet.
+    const ip6 = net.Address.initIp6(([4]u8{
+        0x20,
+        0x01,
+        0x0D,
+        0xB8,
+    }) ++ ([1]u8{0} ** 11) ++ ([1]u8{1}), 8080, 0, 0);
+    var addrs = [_]net.Address{ ip6, ip4 };
+    var stream = try tcpConnectWithHE(addrs[0..]);
+    defer stream.close();
 }
