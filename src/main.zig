@@ -1,16 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const event = std.event;
-const io = std.io;
 const net = std.net;
 const os = std.os;
-const print = std.debug.print;
 const time = std.time;
 const mem = std.mem;
 
-pub const io_mode = .evented;
+// pub const io_mode = .evented;
 
-const Error = error{
+const happy_eyeballs_timeout = 300 * time.ns_per_ms;
+
+const HappyEyeballsError = error{
     Timeout,
 };
 
@@ -20,21 +19,9 @@ fn tcpConnectToHost(allocator: mem.Allocator, name: []const u8, port: u16) !net.
 
     if (list.addrs.len == 0) return error.UnknownHostName;
 
-    var buffer = try allocator.alloc(bool, 2);
-    defer allocator.free(buffer);
-    var chan: event.Channel(bool) = undefined;
-    chan.init(buffer);
-    defer chan.deinit();
-
     for (list.addrs) |addr| {
-        _ = async sleep(&chan);
-        var stream_frame = async connectToAddr(&chan, addr);
-        const timed_out = await async chan.get();
-        if (timed_out) continue;
-        var stream = await stream_frame catch |err| switch (err) {
-            error.ConnectionRefused => {
-                continue;
-            },
+        var stream = tcpConnectToAddress(addr) catch |err| switch (err) {
+            error.ConnectionRefused, HappyEyeballsError.Timeout => continue,
             else => return err,
         };
         defer stream.close();
@@ -43,24 +30,44 @@ fn tcpConnectToHost(allocator: mem.Allocator, name: []const u8, port: u16) !net.
     return std.os.ConnectError.ConnectionRefused;
 }
 
-fn sleep(chan: *event.Channel(bool)) void {
-    print("sleeping\n", .{});
-    time.sleep(250 * time.ns_per_ms);
-    chan.put(true);
-    print("done sleeping\n", .{});
-}
+fn tcpConnectToAddress(address: net.Address) !net.Stream {
+    // TODO(jared): set sock flag back to blocking if not using evented IO mode
+    // after performing happy eyeballs check?
+    const nonblock = os.SOCK.NONBLOCK;
+    // const nonblock = if (std.io.is_async) os.SOCK.NONBLOCK else 0;
+    const sock_flags = os.SOCK.STREAM | nonblock |
+        (if (builtin.target.os.tag == .windows) 0 else os.SOCK.CLOEXEC);
+    const sockfd = try os.socket(address.any.family, sock_flags, os.IPPROTO.TCP);
+    errdefer os.closeSocket(sockfd);
 
-fn connectToAddr(chan: *event.Channel(bool), address: net.Address) !net.Stream {
-    print("attempting to connect\n", .{});
-    var stream = net.tcpConnectToAddress(address);
-    chan.put(false);
-    print("connected successfully\n", .{});
-    return stream;
+    const interval = 50 * time.ns_per_ms;
+    const max_passes = happy_eyeballs_timeout / interval;
+    var passes: u8 = 0;
+    while (passes < max_passes) : (passes += 1) {
+        if (std.io.is_async) {
+            // TODO(jared): do same error handling as blocking version
+            const loop = std.event.Loop.instance orelse return error.WouldBlock;
+            try loop.connect(sockfd, &address.any, address.getOsSockLen());
+        } else {
+            os.connect(sockfd, &address.any, address.getOsSockLen()) catch |err| {
+                switch (err) {
+                    error.WouldBlock, error.ConnectionPending => continue,
+                    else => return err,
+                }
+            };
+            // If there is no error, return the stream with the connected fd.
+            return net.Stream{ .handle = sockfd };
+        }
+    }
+
+    return HappyEyeballsError.Timeout;
 }
 
 pub fn main() anyerror!void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    _ = try tcpConnectToHost(alloc, "google.com", 22);
+    _ = tcpConnectToHost(alloc, "google.com", 22) catch |err| {
+        std.debug.print("{}", .{err});
+    };
 }
