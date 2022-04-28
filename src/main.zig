@@ -52,6 +52,7 @@ fn tcpConnectToAddress(address: net.Address) !net.Stream {
                     else => return err,
                 }
             };
+            loop.sleep(interval);
         } else {
             os.connect(sockfd, &address.any, address.getOsSockLen()) catch |err| {
                 switch (err) {
@@ -59,6 +60,7 @@ fn tcpConnectToAddress(address: net.Address) !net.Stream {
                     else => return err,
                 }
             };
+            time.sleep(interval);
             // TODO(jared): set sock flag back to blocking
         }
 
