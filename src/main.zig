@@ -22,12 +22,40 @@ fn tcpConnectToHost(allocator: mem.Allocator, name: []const u8, port: u16) !net.
     return tcpConnectWithHE(list.addrs);
 }
 
-fn tcpConnectWithHE(addrs: []net.Address) !net.Stream {
+const AddrConfig = struct {
+    preferred: ?net.Address,
+    fallback: ?net.Address,
+};
+
+fn getAddrConfig(addrs: []net.Address) AddrConfig {
+    var cfg = AddrConfig{
+        .preferred = null,
+        .fallback = null,
+    };
     for (addrs) |addr| {
+        switch (addr.any.family) {
+            os.AF.INET => cfg.fallback = addr,
+            os.AF.INET6 => cfg.preferred = addr,
+            else => continue,
+        }
+    }
+    return cfg;
+}
+
+fn tcpConnectWithHE(addrs: []net.Address) !net.Stream {
+    if (addrs.len == 1) return tcpConnectToAddress(addrs[0]);
+
+    var addrConfig = getAddrConfig(addrs);
+
+    if (addrConfig.preferred) |addr| {
         return tcpConnectToAddress(addr) catch |err| switch (err) {
-            error.ConnectionRefused, HappyEyeballsError.Timeout => continue,
+            error.NetworkUnreachable, error.ConnectionRefused, HappyEyeballsError.Timeout => {
+                return tcpConnectToAddress(addrConfig.fallback.?);
+            },
             else => return err,
         };
+    } else {
+        return tcpConnectToAddress(addrConfig.fallback.?);
     }
 
     return std.os.ConnectError.ConnectionRefused;
@@ -70,10 +98,27 @@ fn tcpConnectToAddress(address: net.Address) !net.Stream {
     return HappyEyeballsError.Timeout;
 }
 
-test "happy eyeballs fallback to IPv4" {
+test "Use functioning IPv6" {
     // TODO(jared): Setup temp server that can respond to this within the test.
-    // Currently, run `nc -l 8080` before running test.
-    const ip4 = net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, 8080);
+    // Currently, run `nc -v6l 1234` before running test.
+    const ip6 = net.Address.initIp6(([1]u8{0} ** 15) ++ ([1]u8{1}), 1234, 0, 0);
+    var addrs = [_]net.Address{ip6};
+    var stream = try tcpConnectWithHE(addrs[0..]);
+    defer stream.close();
+
+    // TODO(jared): find better way to initialize IP address. The init value
+    // does have meaning.
+    var addr = net.Address.initIp4([1]u8{0} ** 4, 0);
+    try os.getpeername(stream.handle, &addr.any, &addr.getOsSockLen());
+    try std.testing.expect(addr.any.family == os.AF.INET6 and
+        addr.in.sa.addr == ip6.in.sa.addr and
+        addr.getPort() == 1234);
+}
+
+test "Fallback to IPv4" {
+    // TODO(jared): Setup temp server that can respond to this within the test.
+    // Currently, run `nc -vl 1234` before running test.
+    const ip4 = net.Address.initIp4([4]u8{ 127, 0, 0, 1 }, 1234);
     // This is a documentation address (part of the 2001:DB8::/32 prefix) and
     // is not routable over the internet.
     const ip6 = net.Address.initIp6(([4]u8{
@@ -81,8 +126,16 @@ test "happy eyeballs fallback to IPv4" {
         0x01,
         0x0D,
         0xB8,
-    }) ++ ([1]u8{0} ** 11) ++ ([1]u8{1}), 8080, 0, 0);
+    }) ++ ([1]u8{0} ** 11) ++ ([1]u8{1}), 1234, 0, 0);
     var addrs = [_]net.Address{ ip6, ip4 };
     var stream = try tcpConnectWithHE(addrs[0..]);
     defer stream.close();
+
+    // TODO(jared): find better way to initialize IP address. The init value
+    // does have meaning.
+    var addr = net.Address.initIp4([1]u8{0} ** 4, 0);
+    try os.getpeername(stream.handle, &addr.any, &addr.getOsSockLen());
+    try std.testing.expect(addr.any.family == os.AF.INET and
+        addr.in.sa.addr == ip4.in.sa.addr and
+        addr.getPort() == 1234);
 }
